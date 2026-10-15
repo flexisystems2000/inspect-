@@ -1,8 +1,9 @@
 {
-  "name": "whatsapp-persistent-bot",
+  "name": "whatsapp-id-inspector",
   "version": "1.0.0",
-  "description": "WhatsApp persistent connection bot using @musteqeem/baileys and Express",
+  "description": "WhatsApp ID inspection bot and pairing dashboard",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js"
   },
