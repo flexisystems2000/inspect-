@@ -6,6 +6,11 @@ import express from "express";
 import fs from "fs";
 import path from "path";
 import pino from "pino";
+import { fileURLToPath } from "url";
+
+// Define __dirname in ES module scope
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
@@ -196,7 +201,6 @@ app.post("/api/pair", async (req, res) => {
       return res.status(500).json({ success: false, error: "Bot socket not ready yet. Please wait a few seconds and try again." });
     }
 
-    // Wait for WebSocket connection state to be ready
     let attempts = 0;
     while (!sock.ws || sock.ws.readyState !== 1) {
       await new Promise(resolve => setTimeout(resolve, 1000));
@@ -215,7 +219,7 @@ app.post("/api/pair", async (req, res) => {
 
 // --- Baileys Bot Logic ---
 async function startBot() {
-  const { state: authState, saveCreds } = await useMultiFileAuthState("./auth_session");
+  const { state: authState, saveCreds } = await useMultiFileAuthState(path.join(__dirname, "auth_session"));
 
   sock = makeWASocket({
     auth: authState,
@@ -259,7 +263,6 @@ async function startBot() {
       const remoteJid = msg.key.remoteJid;
       if (!remoteJid) continue;
 
-      // Ignore group chats and broadcasts
       if (remoteJid.endsWith("@g.us") || remoteJid.includes("broadcast")) continue;
 
       const normalizedRemote = remoteJid.replace(/[^0-9]/g, "");
@@ -291,7 +294,6 @@ async function startBot() {
           addLog(`[TARGET INSPECT] Observed message from +${TARGET_PHONE} | JID: ${remoteJid} | Type: ${recordEntry.identifierType} | LID: ${explicitLid || 'Not available'}`);
         }
 
-        // Handle commands if sent from owner self chat
         if (msg.key.fromMe && msg.message?.conversation) {
           const text = msg.message.conversation.trim();
 
