@@ -2,9 +2,9 @@
   "name": "whatsapp-console-management-bot",
   "version": "1.0.0",
   "description": "WhatsApp management bot and pairing code dashboard using Baileys and Express",
-  "main": "inspect.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node inspect.js"
+    "start": "node index.js"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
