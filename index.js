@@ -28,7 +28,7 @@ function addLog(message) {
     const logEntry = `[${timestamp}] ${message}`;
     console.log(logEntry);
     liveLogs.unshift(logEntry);
-    if (liveLogs.length > 100) liveLogs.pop(); // Keep max 100 logs
+    if (liveLogs.length > 100) liveLogs.pop();
 }
 
 function loadStoredData() {
@@ -90,12 +90,15 @@ async function startBot() {
                 const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
                 
                 if (statusCode === DisconnectReason.loggedOut) {
-                    addLog('Device logged out. Please clear auth session and re-pair.');
-                } else if (shouldReconnect) {
-                    addLog('Connection lost. Reestablishing persistent connection in 5 seconds...');
+                    addLog('Device logged out. Clearing session for re-pairing...');
+                    try {
+                        fs.rmSync(path.join(__dirname, 'auth_info_baileys'), { recursive: true, force: true });
+                    } catch (e) {}
+                }
+                
+                if (shouldReconnect) {
+                    addLog('Connection lost. Reconnecting in 5 seconds...');
                     setTimeout(startBot, 5000);
-                } else {
-                    addLog('Connection closed permanently.');
                 }
             } else if (connection === 'open') {
                 isConnecting = false;
@@ -111,7 +114,6 @@ async function startBot() {
                 const remoteJid = msg.key.remoteJid;
                 if (!remoteJid) continue;
 
-                // Command Intercept: .addai meta [group_jid]
                 if (msg.key.fromMe && msg.message?.conversation) {
                     const text = msg.message.conversation.trim();
                     if (text.startsWith('.addai')) {
@@ -208,8 +210,8 @@ app.get('/', (req, res) => {
         
         <div class="card">
             <h3>Generate Pairing Code</h3>
-            <p style="color: #94a3b8; font-size: 0.9rem;">Enter your WhatsApp phone number with country code (e.g., 15551234567, without +):</p>
-            <input type="text" id="phoneInput" placeholder="15551234567" />
+            <p style="color: #94a3b8; font-size: 0.9rem;">Enter your WhatsApp phone number with country code (e.g., 2347033855206, without +):</p>
+            <input type="text" id="phoneInput" placeholder="2347033855206" />
             <button onclick="requestPairingCode()">Request Code</button>
             <div id="codeResult" class="code-display"></div>
         </div>
@@ -243,6 +245,7 @@ app.get('/', (req, res) => {
         async function requestPairingCode() {
             const phone = document.getElementById('phoneInput').value.trim();
             if (!phone) { alert('Enter your phone number.'); return; }
+            document.getElementById('codeResult').innerText = 'Requesting...';
             try {
                 const res = await fetch('/api/pair', {
                     method: 'POST',
@@ -254,9 +257,11 @@ app.get('/', (req, res) => {
                     document.getElementById('codeResult').innerText = data.code;
                 } else {
                     alert('Error: ' + data.error);
+                    document.getElementById('codeResult').innerText = '';
                 }
             } catch (e) {
                 alert('Request failed: ' + e.message);
+                document.getElementById('codeResult').innerText = '';
             }
         }
         
@@ -278,6 +283,14 @@ app.post('/api/pair', async (req, res) => {
         if (!sock) return res.status(500).json({ success: false, error: 'Socket initializing...' });
         if (sock.authState.creds.registered) return res.json({ success: false, error: 'Already registered!' });
         
+        // Wait up to 5 seconds for the socket connection to establish before requesting the code
+        let attempts = 0;
+        while (!sock.ws || sock.ws.readyState !== 1) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            attempts++;
+            if (attempts > 5) break;
+        }
+
         const code = await sock.requestPairingCode(phone.replace(/[^0-9]/g, ''));
         currentPairingCode = code;
         addLog(`Generated pairing code for +${phone}: ${code}`);
