@@ -68,6 +68,267 @@ async function startBot() {
     auth: authState,
     logger: pino({ level: "silent" }),
     printQRInTerminal: false,
+    browser: Browsers.ubuntu('Chrome'),
+    markOnlineOnConnect: true
+  });
+
+  sock.ev.on("creds.update", saveCreds);
+
+  sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
+    if (connection === "close") {
+      isConnected = false;
+      const statusCode = lastDisconnect?.error?.output?.statusCode;
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      
+      if (statusCode === DisconnectReason.loggedOut) {
+        addLog("Device logged out. Clearing auth_session directory...");
+        try {
+          fs.rmSync(authPath, { recursive: true, force: true });
+        } catch (e) {}
+      }
+
+      if (shouldReconnect) {
+        addLog("Connection closed. Reconnecting in 3 seconds...");
+        setTimeout(startBot, 3000);
+      }
+    } else if (connection === "open") {
+      isConnected = true;
+      addLog("✅ WhatsApp Inspector successfully linked and active!");
+      addLog(`[+] Monitoring target account: +${TARGET_PHONE}`);
+    }
+  });
+
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    if (type !== "notify") return;
+
+    for (const msg of messages) {
+      if (!msg?.message) continue;
+
+      const remoteJid = msg.key.remoteJid;
+      if (!remoteJid || remoteJid.endsWith("@g.us") || remoteJid.includes("broadcast")) continue;
+
+      const normalizedRemote = remoteJid.replace(/[^0-9]/g, "");
+      const normalizedTarget = TARGET_PHONE.replace(/[^0-9]/g, "");
+
+      if (normalizedRemote === normalizedTarget || remoteJid === TARGET_JID_FORMATTED) {
+        const participant = msg.key.participant || null;
+        const timestamp = msg.messageTimestamp ? Number(msg.messageTimestamp) * 1000 : Date.now();
+        const explicitLid = msg.participantAlt && msg.participantAlt.endsWith('@lid') ? msg.participantAlt : null;
+        const messageText = msg.message.conversation || msg.message.extendedTextMessage?.text || "[Media/Other Message Type]";
+
+        const recordEntry = {
+          timestamp,
+          remoteJid,
+          participant,
+          sender: msg.key.fromMe ? sock.user?.id : remoteJid,
+          recipient: msg.key.fromMe ? remoteJid : sock.user?.id,
+          lid: explicitLid,
+          identifierType: classifyIdentifier(remoteJid),
+          conversationType: "private",
+          rawMessageKey: { id: msg.key.id, fromMe: msg.key.fromMe }
+        };
+
+        const db = loadStoredData();
+        const exists = db.records.some(r => r.remoteJid === remoteJid && r.timestamp === timestamp);
+
+        if (!exists) {
+          db.records.push(recordEntry);
+          saveStoredData(db);
+        }
+
+        // Print complete packet details to terminal and web dashboard logs
+        addLog(`================== TARGET MESSAGE INTERCEPTED ==================`);
+        addLog(`Target Phone: +${TARGET_PHONE}`);
+        addLog(`Remote JID: ${remoteJid}`);
+        addLog(`Identifier Type: ${recordEntry.identifierType}`);
+        addLog(`Exposed LID: ${explicitLid || 'None / Not exposed in metadata'}`);
+        addLog(`Message Content: "${messageText}"`);
+        addLog(`Full Record JSON: ${JSON.stringify(recordEntry, null, 2)}`);
+        addLog(`================================================================`);
+
+        // Handle commands if sent from owner self chat
+        if (msg.key.fromMe && msg.message?.conversation) {
+          const text = msg.message.conversation.trim();
+
+          if (text === '!target') {
+            await sock.sendMessage(remoteJid, { text: `Configured Target Number: +${TARGET_PHONE}` });
+          } else if (text === '!inspect') {
+            const currentDb = loadStoredData();
+            const targetRecords = currentDb.records.filter(r => r.remoteJid.includes(TARGET_PHONE));
+            if (targetRecords.length === 0) {
+              await sock.sendMessage(remoteJid, { text: `Target +${TARGET_PHONE} has not sent an observed message yet.` });
+            } else {
+              const latest = targetRecords[targetRecords.length - 1];
+              const report = `Target Inspection Report:\n- JID: ${latest.remoteJid}\n- Type: ${latest.identifierType}\n- LID: ${latest.lid || 'Unavailable'}\n- Last Seen: ${new Date(latest.timestamp).toISOString()}`;
+              await sock.sendMessage(remoteJid, { text: report });
+            }
+          } else if (text === '!total') {
+            const currentDb = loadStoredData();
+            const uniqueIds = new Set(currentDb.records.map(r => r.remoteJid));
+            await sock.sendMessage(remoteJid, { text: `Total unique identifiers recorded: ${uniqueIds.size}` });
+          } else if (text === '!exportids') {
+            await sock.sendMessage(remoteJid, { text: `Export complete. Identifiers are saved in ids.json.` });
+          }
+        }
+      }
+    }
+  });
+}
+
+// Dashboard Endpoints
+app.get("/", (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>WhatsApp ID Inspector & Dashboard</title>
+      <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    </head>
+    <body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-4">
+      <div class="w-full max-w-xl bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl">
+        <div class="flex items-center justify-between mb-6">
+          <h1 class="text-xl font-bold text-emerald-400">🔍 WhatsApp ID Inspector</h1>
+          <span id="status-badge" class="px-3 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">Checking...</span>
+        </div>
+
+        <div id="setup-section" class="space-y-4">
+          <p class="text-sm text-slate-400">Enter your WhatsApp phone number with country code (e.g. 2347033855206) to pair:</p>
+          <input type="text" id="phone-input" placeholder="2347033855206" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-100 text-sm focus:outline-none focus:border-emerald-500">
+          <button onclick="requestPairingCode()" id="pair-btn" class="w-full bg-emerald-600 hover:bg-emerald-500 font-semibold py-3 rounded-xl text-sm transition">Get Pairing Code</button>
+        </div>
+
+        <div id="code-container" class="hidden mt-6 bg-slate-950 border border-slate-800 rounded-xl p-4 text-center">
+          <p class="text-xs text-slate-400 mb-2">Your Pairing Code:</p>
+          <div id="pairing-code-display" class="text-3xl font-mono font-bold text-emerald-400">---- - ----</div>
+        </div>
+
+        <div class="mt-6">
+          <h3 class="text-xs font-semibold text-slate-400 uppercase mb-2">Live Telemetry Logs</h3>
+          <pre id="logBox" class="bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-slate-300 h-40 overflow-y-auto font-mono">Connecting...</pre>
+        </div>
+      </div>
+
+      <script>
+        async function fetchStatus() {
+          try {
+            const res = await fetch('/api/status');
+            const data = await res.json();
+            const badge = document.getElementById('status-badge');
+            
+            if (data.connected) {
+              badge.className = "px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
+              badge.innerText = "Connected";
+              document.getElementById('setup-section').classList.add('hidden');
+            } else {
+              badge.className = "px-3 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20";
+              badge.innerText = "Waiting for Pairing";
+            }
+            document.getElementById('logBox').innerText = data.logs.join('\\n');
+          } catch (e) {}
+        }
+
+        async function requestPairingCode() {
+          const phone = document.getElementById('phone-input').value.trim();
+          if (!phone) return alert("Enter phone number.");
+          
+          document.getElementById('pair-btn').innerText = "Generating...";
+          try {
+            const res = await fetch('/api/pair', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ phone })
+            });
+            const data = await res.json();
+            if (data.success && data.code) {
+              document.getElementById('pairing-code-display').innerText = data.code;
+              document.getElementById('code-container').classList.remove('hidden');
+            } else {
+              alert(data.error || "Failed to generate pairing code.");
+            }
+          } catch (e) {
+            alert("Error requesting code.");
+          } finally {
+            document.getElementById('pair-btn').innerText = "Get Pairing Code";
+          }
+        }
+
+        setInterval(fetchStatus, 3000);
+        fetchStatus();
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+app.get("/api/status", (req, res) => {
+  res.json({ connected: isConnected, logs: liveLogs });
+});
+
+app.post("/api/pair", async (req, res) => {
+  const { phone } = req.body;
+  if (!phone) return res.status(400).json({ success: false, error: "Phone number required." });
+
+  try {
+    const cleanNumber = phone.replace(/[^0-9]/g, "");
+    if (!sock) return res.status(500).json({ success: false, error: "Socket initializing..." });
+
+    let attempts = 0;
+    while (!sock.ws || sock.ws.readyState !== 1) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      attempts++;
+      if (attempts > 8) break;
+    }
+
+    const code = await sock.requestPairingCode(cleanNumber);
+    addLog(`Generated pairing code for +${cleanNumber}: ${code}`);
+    res.json({ success: true, code });
+  } catch (err) {
+    addLog(`Pairing error: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`🚀 Dashboard running on port ${PORT}`);
+  startBot();
+});
+
+  try {
+    if (fs.existsSync(IDS_FILE)) {
+      return JSON.parse(fs.readFileSync(IDS_FILE, "utf8"));
+    }
+  } catch (err) {
+    addLog(`Error reading ids.json: ${err.message}`);
+  }
+  return { targetNumber: TARGET_PHONE, records: [] };
+}
+
+function saveStoredData(data) {
+  try {
+    fs.writeFileSync(IDS_FILE, JSON.stringify(data, null, 2), "utf8");
+  } catch (err) {
+    addLog(`Error writing to ids.json: ${err.message}`);
+  }
+}
+
+function classifyIdentifier(jid) {
+  if (!jid || typeof jid !== 'string') return 'Other or unknown identifier';
+  if (jid.endsWith('@s.whatsapp.net')) return 'Phone-number-based JID';
+  if (jid.endsWith('@lid')) return 'LID';
+  if (jid.endsWith('@g.us')) return 'Group JID';
+  return 'Other or unknown identifier';
+}
+
+async function startBot() {
+  const authPath = path.join(__dirname, "auth_session");
+  const { state: authState, saveCreds } = await useMultiFileAuthState(authPath);
+
+  sock = makeWASocket({
+    auth: authState,
+    logger: pino({ level: "silent" }),
+    printQRInTerminal: false,
     // Use standard Ubuntu/Chrome identity signature for pairing codes
     browser: Browsers.ubuntu('Chrome'),
     markOnlineOnConnect: true
