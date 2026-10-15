@@ -4,7 +4,7 @@
   "description": "WhatsApp management bot and pairing code dashboard using Baileys and Express",
   "main": "inspect.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node inspect.js"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
