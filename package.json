@@ -1,14 +1,14 @@
 {
-  "name": "whatsapp-console-management-bot",
+  "name": "whatsapp-persistent-bot",
   "version": "1.0.0",
-  "description": "WhatsApp management bot and pairing code dashboard using Baileys and Express",
+  "description": "WhatsApp persistent connection bot using @musteqeem/baileys and Express",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
-    "@whiskeysockets/baileys": "^6.7.9",
+    "@musteqeem/baileys": "latest",
     "express": "^4.19.2",
     "pino": "^8.19.0"
   },
